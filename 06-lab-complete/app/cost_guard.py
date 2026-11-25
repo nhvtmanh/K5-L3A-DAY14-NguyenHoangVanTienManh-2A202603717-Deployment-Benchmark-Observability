@@ -1,21 +1,28 @@
-"""
-Cost guard (tiêu chí 8).
+"""Daily token spend shared across workers and instances."""
 
-Yêu cầu:
-  • Cộng dồn chi phí LLM (tính theo token) vào Redis
-  • Tổng chi phí vượt DAILY_BUDGET_USD (hoặc MONTHLY_BUDGET_USD) → HTTP 402
-"""
+from datetime import datetime, timezone
 
-# Giá USD / 1K tokens (tham khảo gpt-4o-mini)
+from fastapi import HTTPException
+
+from .config import settings
+from .redis_client import r
+
 PRICE_INPUT_PER_1K = 0.00015
 PRICE_OUTPUT_PER_1K = 0.0006
 
 
-def check_budget() -> None:
-    """Gọi TRƯỚC khi gọi LLM. Hết budget → raise HTTPException(status_code=402)."""
-    raise NotImplementedError("TODO: check_budget")
+def check_budget() -> str:
+    budget_key = f"agent:cost:{datetime.now(timezone.utc).date().isoformat()}"
+    spent = float(r.get(budget_key) or 0)
+    if spent >= settings.daily_budget_usd:
+        raise HTTPException(status_code=402, detail="Daily budget exhausted")
+    return budget_key
 
 
-def record_cost(input_tokens: int, output_tokens: int) -> float:
-    """Gọi SAU khi gọi LLM. Cộng chi phí của request vào tổng, trả về chi phí request."""
-    raise NotImplementedError("TODO: record_cost")
+def record_cost(input_tokens: int, output_tokens: int, budget_key: str) -> float:
+    cost = (input_tokens * PRICE_INPUT_PER_1K + output_tokens * PRICE_OUTPUT_PER_1K) / 1000
+    with r.pipeline() as batch:
+        batch.incrbyfloat(budget_key, cost)
+        batch.expire(budget_key, 2 * 86400)
+        batch.execute()
+    return cost

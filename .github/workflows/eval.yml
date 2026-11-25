@@ -1,0 +1,35 @@
+name: Agent quality gate
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: 06-lab-complete/benchmark-observability/develop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -r requirements.txt
+      - name: Start agent and run eval
+        env:
+          AGENT_VERSION: v2
+          MOCK_ERROR_RATE: "0"
+          PORT: "8002"
+        run: |
+          python app.py > /tmp/day14-agent.log 2>&1 &
+          agent_pid=$!
+          trap 'kill "$agent_pid" 2>/dev/null || true' EXIT
+          if ! curl --fail --silent --show-error --retry 15 --retry-connrefused \
+            --retry-delay 1 http://127.0.0.1:8002/health; then
+            cat /tmp/day14-agent.log
+            exit 1
+          fi
+          python eval/run_eval.py --url http://127.0.0.1:8002 --min-accuracy 0.85
